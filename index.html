@@ -310,7 +310,7 @@ const TZ = "Asia/Jerusalem";
 const AI_MODEL = "claude-sonnet-5-5";
 const TESS_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
 /* שרת ההתחברות (Cloudflare Worker) שמחזיק את ה-Client Secret. ריק = שימוש ב-Secret מההגדרות */
-const AUTH_PROXY = "https://luzsync-auth.jon-sh2005.workers.dev";
+const AUTH_PROXY = "https://script.google.com/macros/s/AKfycbzo403H6sp3n8KjIRZF9hdzUd2YUMJCp5yT7cOuIs7z0_bKrx3oi6QSfRM52LxR-K32/exec";
 const LS = k => "luzsync_" + k;
 function lsGet(k, d){ try{ const v = localStorage.getItem(LS(k)); return v === null ? d : v; } catch(e){ return d; } }
 function lsSet(k, v){ try{ localStorage.setItem(LS(k), v); } catch(e){} }
@@ -960,8 +960,10 @@ function connectGoogle(){
 /* בקשת טוקן: דרך שרת ההתחברות אם קיים, אחרת ישירות לגוגל עם ה-Secret מההגדרות */
 async function tokenRequest(kind, payload){
   if (AUTH_PROXY){
-    const r = await fetch(AUTH_PROXY.replace(/\/$/, "") + "/" + kind, {
-      method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(payload)
+    // שרת Google Apps Script: בקשה "פשוטה" (text/plain) כדי לא לחייב preflight של CORS
+    const r = await fetch(AUTH_PROXY, {
+      method:"POST", headers:{ "Content-Type":"text/plain;charset=utf-8" },
+      body: JSON.stringify(Object.assign({ action: kind }, payload))
     });
     return r.json();
   }
