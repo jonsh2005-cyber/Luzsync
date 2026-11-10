@@ -456,6 +456,12 @@ function toTime(tok){
 }
 const TOK = "(\\d{1,2}:\\d{2}|\\d{4}|\\d{1,2})";
 const CUE = /שעה|שעות|בין|משעה|מהשעה|החל|from|at/;
+const END_CUE = /נסיים|מסיימים|נסיים|סיום|עד|נגמר|נגמור|מסתיים|ומסתיים|end|until|to\b/i;
+/* מילות מסגרת בשורת כותרת שאינן שם האירוע */
+const FILLER = new RegExp(
+  "(?:^|[^א-תa-zA-Z0-9])(?:נתחיל|מתחילים|נסיים|מסיימים|ונסיים|ומסיימים)(?=[^א-תa-zA-Z0-9]|$)" +
+  "|(?:^|[^א-תa-zA-Z0-9])ב?יום\\s+(?:" + Object.keys(DOW_FULL).join("|") + ")(?=[^א-תa-zA-Z0-9]|$)" +
+  "|(?:^|[^א-תa-zA-Z0-9])ב-?(?=[^א-תa-zA-Z0-9]|$)", "g");
 
 function detectTimes(line){
   const spans = [], year = new Date().getFullYear();
@@ -470,6 +476,16 @@ function detectTimes(line){
     if ((/^\d{4}$/.test(m[2]) && yearish(+m[2])) || (/^\d{4}$/.test(m[3]) && yearish(+m[3]))) continue;
     spans.push([m.index + m[1].length, m[0].length - m[1].length]);
     return { start: a, end: b, spans };
+  }
+  // שתי שעות בלי מקף, עם מילת סיום ביניהן: "נתחיל ב14:00, נסיים ב18:00"
+  const two = [...line.matchAll(/(^|[^\d:./])(\d{1,2}:\d{2})(?![\d:])/g)];
+  if (two.length >= 2){
+    const s0 = two[0].index + two[0][1].length, s1 = two[1].index + two[1][1].length;
+    const between = line.slice(s0 + two[0][2].length, s1);
+    const a = toTime(two[0][2]), b = toTime(two[1][2]);
+    if (a !== null && b !== null && END_CUE.test(between)){
+      return { start: a, end: b, spans: [[s0, two[0][2].length], [s1, two[1][2].length]] };
+    }
   }
   const colonRe = /(^|[^\d:./])(\d{1,2}:\d{2})(?![\d:])/g;
   while ((m = colonRe.exec(line)) !== null){
@@ -505,7 +521,7 @@ function detectDuration(line){
 function cleanTitle(raw){
   const t = raw
     .replace(/^\s*\d{1,2}[.)]\s*/, "")
-    .replace(/^[\s•*·>#\-–—:|✅✔️📌🔹▪️●○]+/u, "")
+    .replace(/^[\s•*·>#\-–—:|,✅✔️📌🔹▪️●○]+/u, "")
     .replace(/[\s•*·>#\-–—:|,.;]+$/u, "")
     .replace(/^(בשעה|משעה|מהשעה|בשעות|בין|עד|ב)\s+/, "")
     .replace(/\s+(בשעה|משעה|בין|עד)$/, "")
@@ -520,19 +536,30 @@ function parseLocal(text){
   const lines = normalize(text).split(/\r?\n/);
   const out = [], miss = [];
   let ctxDate = null, prevStart = null;
+  // אירוע שהשם שלו מגיע בשורות שאחרי שורת הכותרת (עד שורה ריקה)
+  let pending = null;
+  const closePending = () => {
+    if (pending && pending.parts.length) pending.ev.title = pending.parts.slice(0, 2).join(" ");
+    pending = null;
+  };
 
   for (const rawLine of lines){
     const line = rawLine.trim();
-    if (!line) continue;
+    if (!line){ closePending(); continue; }
     const times = detectTimes(line);
     const taken = times ? times.spans : [];
     const dateHit = detectDate(line, today, taken);
 
     if (!times){
-      if (dateHit){ ctxDate = dateHit.date; prevStart = null; }
+      if (dateHit){ closePending(); ctxDate = dateHit.date; prevStart = null; }
+      else if (pending && /[א-תa-zA-Z]{2,}/.test(line)){
+        pending.parts.push(cleanTitle(line));
+        pending.ev.src += "\n" + line;
+      }
       else if (line.replace(/[^א-תa-zA-Z]/g, "").length > 2) miss.push(line);
       continue;
     }
+    closePending();
     let date = dateHit ? dateHit.date : (ctxDate || today);
     if (dateHit){ ctxDate = dateHit.date; prevStart = null; }
 
@@ -555,8 +582,15 @@ function parseLocal(text){
     else if (endM >= 1440){ endDate = shift(date, 1); endM -= 1440; }
 
     const allSpans = [...taken, ...durSpans, ...(dateHit ? dateHit.spans : [])];
-    out.push({ title: cleanTitle(strip(line, allSpans)), date, endDate, start: hhmm(times.start), end: hhmm(endM), guessed, src: line });
+    const rest = strip(line, allSpans);
+    const bare = cleanTitle(rest.replace(FILLER, " "));
+    // שורה שנשארה בלי שם אחרי הסרת תאריך, שעות ומילות מסגרת: השם בשורות הבאות
+    const headerOnly = bare === "אירוע";
+    const ev = { title: bare, date, endDate, start: hhmm(times.start), end: hhmm(endM), guessed, src: line };
+    out.push(ev);
+    if (headerOnly) pending = { ev, parts: [] };
   }
+  closePending();
   return { events: out, skipped: miss };
 }
 
